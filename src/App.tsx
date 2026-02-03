@@ -2,7 +2,7 @@ import { useState } from "react"
 import { useForm } from "react-hook-form"
 import { z } from "zod"
 import { zodResolver } from "@hookform/resolvers/zod"
-import { Upload, CheckCircle2, AlertCircle } from "lucide-react"
+import { Upload, CheckCircle2, AlertCircle, X, FileText } from "lucide-react"
 
 // Importações dos componentes do Shadcn (ajuste os caminhos conforme seu projeto)
 import { Button } from "@/components/ui/button"
@@ -33,11 +33,12 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form"
+import axios from "axios"
 
 // Schema de validação (define os campos e regras)
 const formSchema = z.object({
   titulo: z.string().min(2, "O título é obrigatório."),
-  emailSolicitante: z.string().email("Insira um email válido."),
+  emailSolicitante: z.email("Insira um email válido."),
   areaSolicitante: z.string({ error: "Selecione uma área." }),
   isHomologado: z.boolean(),
   
@@ -56,7 +57,21 @@ type FormValues = z.infer<typeof formSchema>
 function App() {
   // Estado local para controle visual extra se necessário, 
   // mas o hook-form gerencia o estado principal.
-  const [file, setFile] = useState<File | null>(null)
+  const [files, setFiles] = useState<File[]>([])
+  
+  // Função para lidar com a seleção de arquivos
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      // Converte o FileList para Array e adiciona aos existentes
+      const newFiles = Array.from(e.target.files)
+      setFiles((prev) => [...prev, ...newFiles])
+    }
+  }
+
+  // Função para remover um arquivo específico da lista
+  const removeFile = (indexToRemove: number) => {
+    setFiles((prev) => prev.filter((_, index) => index !== indexToRemove))
+  }
 
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
@@ -74,20 +89,86 @@ function App() {
   // Observa o valor do checkbox para renderização condicional
   const isHomologado = form.watch("isHomologado")
 
-  function onSubmit(data: FormValues) {
-    // Aqui você processaria os dados (ex: enviar para API)
-    console.log("Dados do formulário:", data)
-    if (!isHomologado && file) {
-      console.log("Arquivo anexado:", file.name)
+  // Função auxiliar para converter arquivo em Base64
+  const convertToBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => {
+        // O resultado vem como "data:image/png;base64,iVBORw0KGgo..."
+        // Para o Power Automate/SharePoint, geralmente precisamos apenas da parte DEPOIS da vírgula.
+        const result = reader.result as string;
+        // Se quiser mandar COM o prefixo (data:...), use apenas 'result'.
+        // Se quiser mandar SÓ o conteúdo (raw), use o split abaixo:
+        const base64Content = result.split(',')[1]; 
+        resolve(base64Content);
+      };
+      reader.onerror = (error) => reject(error);
+    });
+  };
+
+  // No submit, você acessaria o array 'files'
+  async function onSubmit(data: FormValues) {
+    try {
+      // 1. Preparar array de anexos (se houver e não for homologado)
+      let anexosBase64: { nome: string; conteudo: string; tipo: string }[] = [];
+
+      if (!data.isHomologado && files.length > 0) {
+        // Convertemos todos os arquivos em paralelo
+        anexosBase64 = await Promise.all(
+          files.map(async (file) => {
+            const base64String = await convertToBase64(file);
+            return {
+              nome: file.name,     // Ex: "contrato.pdf"
+              conteudo: base64String, // A string gigante em base64
+              tipo: file.type      // Ex: "application/pdf"
+            };
+          })
+        );
+      }
+
+      // 2. Montar o JSON Payload (Objeto JavaScript simples)
+      const payload = {
+        titulo: data.titulo,
+        emailSolicitante: data.emailSolicitante,
+        areaSolicitante: data.areaSolicitante,
+        isHomologado: data.isHomologado,
+        // Campos condicionais
+        nomeFornecedor: data.nomeFornecedor || null,
+        codigoInterno: data.codigoInterno || null,
+        contexto: data.contexto,
+        urgencia: data.urgencia,
+        impacto: data.impacto,
+        // Aqui vai sua lista de arquivos
+        anexos: anexosBase64 
+      };
+
+      console.log("Enviando Payload:", payload); // Para você checar no console
+
+      // 3. Enviar via Axios como JSON (padrão)
+      const response = await axios.post(
+        "https://defaulta0c9fd24e2324d0987a31a2adf01f4.a8.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/637a33973a18470e985ea255060b483e/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=jn4qtwr6RELpUnjHtxOZsdjwT1Lcku1XwjNh_Zz1alM", 
+        payload
+      );
+
+      console.log("Sucesso:", response.data);
+      alert("Solicitação enviada com sucesso!");
+
+      // Limpar estado se quiser
+      form.reset();
+      setFiles([]);
+
+    } catch (error) {
+      console.error("Erro ao enviar:", error);
+      alert("Erro ao enviar a solicitação.");
     }
-    alert("Formulário enviado com sucesso! (Veja o console)")
   }
 
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
       <Card className="w-full max-w-7xl shadow-lg">
         <CardHeader className="space-y-1">
-          <CardTitle className="text-2xl font-bold text-primary">TAP - Homologação de Insumos</CardTitle>
+          <CardTitle className="text-2xl font-bold text-primary">TAP - Homologação de Matérias-Primas</CardTitle>
           <CardDescription>
             Abertura de processo para homologação de novas matérias-primas e produtos industriais.
           </CardDescription>
@@ -135,16 +216,13 @@ function App() {
                       <FormLabel>Área Solicitante</FormLabel>
                       <Select onValueChange={field.onChange} defaultValue={field.value}>
                         <FormControl>
-                          <SelectTrigger>
+                          <SelectTrigger className="cursor-pointer">
                             <SelectValue placeholder="Selecione a área" />
                           </SelectTrigger>
                         </FormControl>
                         <SelectContent>
-                          <SelectItem value="ti">Tecnologia (TI)</SelectItem>
-                          <SelectItem value="rh">Recursos Humanos</SelectItem>
-                          <SelectItem value="financeiro">Financeiro</SelectItem>
-                          <SelectItem value="operacoes">Operações</SelectItem>
-                          <SelectItem value="marketing">Marketing</SelectItem>
+                          <SelectItem value="Suprimentos">Suprimentos</SelectItem>
+                          <SelectItem value="P&D">P&D</SelectItem>
                         </SelectContent>
                       </Select>
                       <FormMessage />
@@ -168,6 +246,7 @@ function App() {
                         <Checkbox
                           checked={field.value}
                           onCheckedChange={field.onChange}
+                          className="cursor-pointer"
                         />
                       </FormControl>
                       <div className="space-y-1 leading-none">
@@ -216,29 +295,54 @@ function App() {
                   ) : (
                     <div className="col-span-2">
                       <FormLabel>Anexar Documentos do Fornecedor</FormLabel>
-                      <div className="mt-2 flex justify-center rounded-lg border border-dashed border-gray-900/25 px-6 py-6 bg-white">
-                        <div className="text-center">
-                          <Upload className="mx-auto h-8 w-8 text-gray-300" aria-hidden="true" />
-                          <div className="mt-2 flex text-sm leading-6 text-gray-600 justify-center">
+                      <div className="mt-2 flex justify-center rounded-lg border border-dashed border-slate-300 px-6 py-8 bg-white hover:bg-slate-50 transition-colors">
+                        <div className="text-center w-full">
+                          <Upload className="mx-auto h-10 w-10 text-slate-400" aria-hidden="true" />
+                          <div className="mt-4 flex text-sm leading-6 text-slate-600 justify-center">
                             <label
                               htmlFor="file-upload"
-                              className="relative cursor-pointer rounded-md bg-white font-semibold text-indigo-600 focus-within:outline-none focus-within:ring-2 focus-within:ring-indigo-600 focus-within:ring-offset-2 hover:text-indigo-500"
+                              className="relative cursor-pointer rounded-md bg-transparent font-semibold text-blue-600 focus-within:outline-none hover:text-blue-500"
                             >
-                              <span>Upload de arquivo</span>
-                              <input 
-                                id="file-upload" 
-                                name="file-upload" 
-                                type="file" 
-                                className="sr-only" 
-                                onChange={(e) => setFile(e.target.files?.[0] || null)}
+                              <span>Clique para selecionar</span>
+                              <input
+                                id="file-upload"
+                                name="file-upload"
+                                type="file"
+                                multiple // <--- IMPORTANTE: Permite múltiplos arquivos
+                                className="sr-only"
+                                onChange={handleFileChange}
                               />
                             </label>
                             <p className="pl-1">ou arraste e solte</p>
                           </div>
-                          <p className="text-xs leading-5 text-gray-600">PDF, PNG, JPG até 10MB</p>
-                          {file && <p className="text-sm text-green-600 mt-2 font-semibold">Arquivo: {file.name}</p>}
+                          <p className="text-xs leading-5 text-slate-500 mt-1">PDF, Imagens ou ZIP até 20MB</p>
                         </div>
                       </div>
+
+                      {/* Lista de Arquivos Selecionados */}
+                      {files.length > 0 && (
+                        <div className="mt-4 space-y-2">
+                          <p className="text-sm font-medium text-slate-700">Arquivos selecionados ({files.length}):</p>
+                          <div className="grid grid-cols-1 gap-2">
+                            {files.map((file, index) => (
+                              <div key={`${file.name}-${index}`} className="flex items-center justify-between p-2 bg-slate-100 border border-slate-200 rounded-md text-sm">
+                                <div className="flex items-center gap-2 overflow-hidden">
+                                  <FileText className="h-4 w-4 text-blue-500 shrink-0" />
+                                  <span className="truncate text-slate-700 font-medium">{file.name}</span>
+                                  <span className="text-slate-400 text-xs">({(file.size / 1024).toFixed(1)} KB)</span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => removeFile(index)}
+                                  className="text-slate-400 hover:text-red-500 transition-colors p-1"
+                                >
+                                  <X className="h-4 w-4" />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -255,14 +359,14 @@ function App() {
                         <FormLabel>Nível de Urgência</FormLabel>
                         <Select onValueChange={field.onChange} defaultValue={field.value}>
                           <FormControl>
-                            <SelectTrigger className="w-full">
+                            <SelectTrigger className="w-full cursor-pointer">
                               <SelectValue placeholder="Selecione" />
                             </SelectTrigger>
                           </FormControl>
                           <SelectContent>
-                            <SelectItem value="baixa">🟢 Baixa</SelectItem>
-                            <SelectItem value="media">🟡 Média</SelectItem>
-                            <SelectItem value="alta">🔴 Alta</SelectItem>
+                            <SelectItem value="Baixa">🟢 Baixa</SelectItem>
+                            <SelectItem value="Média">🟡 Média</SelectItem>
+                            <SelectItem value="Alta">🔴 Alta</SelectItem>
                           </SelectContent>
                         </Select>
                         <FormMessage />
@@ -312,8 +416,8 @@ function App() {
               </div>
 
               <CardFooter className="px-0 pt-4 flex justify-end">
-                <Button type="button" variant="outline" className="mr-4">Cancelar</Button>
-                <Button type="submit" className="w-full md:w-auto bg-slate-900 text-white hover:bg-slate-800">
+                <Button type="button" variant="outline" className="mr-4 cursor-pointer">Cancelar</Button>
+                <Button type="submit" className="w-full md:w-auto bg-slate-900 text-white hover:bg-slate-800 cursor-pointer">
                   Enviar Solicitação
                 </Button>
               </CardFooter>
